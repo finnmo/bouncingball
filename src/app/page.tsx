@@ -21,6 +21,18 @@ interface CircleWall {
   color?: string;
 }
 
+// Particle interface for shatter effects.
+interface Particle {
+  x: number;
+  y: number;
+  vx: number;
+  vy: number;
+  radius: number;
+  life: number;
+  maxLife: number;
+  color: string;
+}
+
 // ------------------------------
 // Ball Class and Helper Functions
 // ------------------------------
@@ -206,6 +218,41 @@ function checkRadialCap(
 }
 
 // ------------------------------
+// Particle Functions (for shatter effect)
+// ------------------------------
+function createShatterParticles(
+  wall: CircleWall,
+  cx: number,
+  cy: number,
+  count: number = 20
+): Particle[] {
+  const particles: Particle[] = [];
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * TWO_PI;
+    // Spawn along the wall's circumference.
+    const x = cx + wall.radius * Math.cos(angle);
+    const y = cy + wall.radius * Math.sin(angle);
+    // Give particles an outward velocity with randomness.
+    const speed = Math.random() * 50 + 50; // between 50 and 100 pixels/s
+    const vx = Math.cos(angle) * speed + (Math.random() - 0.5) * 50;
+    const vy = Math.sin(angle) * speed + (Math.random() - 0.5) * 50;
+    const radius = Math.random() * 2 + 1; // between 1 and 3 pixels
+    const maxLife = Math.random() * 0.5 + 0.5; // between 0.5 and 1 second
+    particles.push({
+      x,
+      y,
+      vx,
+      vy,
+      radius,
+      life: maxLife,
+      maxLife,
+      color: wall.color || "white",
+    });
+  }
+  return particles;
+}
+
+// ------------------------------
 // Main Component: Responsive Canvas & Animation
 // ------------------------------
 export default function HomePage() {
@@ -225,10 +272,10 @@ export default function HomePage() {
 
   // User controls.
   const [gravity, setGravity] = useState(400); // pixels/s²
-  const [ballRadius, setBallRadius] = useState(12);
+  const [ballRadius, setBallRadius] = useState(10);
   const [numWalls, setNumWalls] = useState(10);
   const [removeWallOnPass, setRemoveWallOnPass] = useState(true);
-  // fadeSlider: 0 = permanent trail, 1 = no trail.
+  // fadeStrength: 0 = full trail, 1 = no trail.
   const [fadeStrength, setFadeStrength] = useState(0.75);
   const [mode, setMode] = useState<"normal" | "alternate">("alternate");
   const [walls, setWalls] = useState<CircleWall[]>([]);
@@ -261,10 +308,12 @@ export default function HomePage() {
 
     // Create the ball at the center.
     const ball = new Ball(cx, cy, ballRadius, 100, -50);
-    const localWalls = walls.map((w) => ({ ...w }));
+    // Make a local copy of walls.
+    let localWalls = walls.map((w) => ({ ...w }));
     let lastTime = performance.now();
     let animationFrameId: number;
-
+    // Particle array for shatter effects.
+    let particles: Particle[] = [];
     // Store recent ball positions for trail.
     const maxTrailLength = 30;
     const ballTrail: { x: number; y: number }[] = [];
@@ -272,30 +321,30 @@ export default function HomePage() {
     function animate(time: number) {
       const dt = (time - lastTime) / 1000;
       lastTime = time;
-
-      // Clear the canvas completely (no trail for circles).
+      
+      // Clear canvas completely (so circles have no trail).
       if(!ctx) return;
       ctx.clearRect(0, 0, cw, ch);
-
-      // Draw circles (walls) at full opacity.
+      
+      // Draw walls (circles) at full opacity.
       drawWalls(ctx, cx, cy, localWalls);
-
+      
       // Update wall rotations.
       localWalls.forEach((wall) => {
         wall.rotation = normalizeAngle(wall.rotation + wall.rotationSpeed * dt * 60);
       });
-
+      
       const prevX = ball.x;
       const prevY = ball.y;
       ball.update(dt, gravity);
-
+      
       // Append current ball position to trail.
       ballTrail.push({ x: ball.x, y: ball.y });
       if (ballTrail.length > maxTrailLength) {
         ballTrail.shift();
       }
-
-      // Check collisions and remove walls if needed.
+      
+      // Check collisions and remove (shatter) walls.
       for (let i = 0; i < localWalls.length; i++) {
         const wall = localWalls[i];
         const arcCollision = checkArcCollision(ball, prevX, prevY, cx, cy, wall);
@@ -325,51 +374,78 @@ export default function HomePage() {
           ball.reflect(capCollision2.normalX, capCollision2.normalY);
           break;
         }
-        // Remove wall if flag is set and ball is passing through the gap.
+        // If removeWallOnPass is set and the ball passes through the gap,
+        // remove the wall AND spawn shatter particles.
         const ballDist = Math.hypot(ball.x - cx, ball.y - cy);
         if (
           removeWallOnPass &&
           Math.abs(ballDist - wall.radius) < ball.radius &&
           isAngleInGap(Math.atan2(ball.y - cy, ball.x - cx), wall.rotation)
         ) {
+          const shatter = createShatterParticles(wall, cx, cy, 20);
+          particles.push(...shatter);
           localWalls.splice(i, 1);
           i--;
         }
       }
-
-      // Reset ball to center if it exits the outer wall.
+      
+      // Reset ball and walls if ball exits the outer wall.
       const ballDist = Math.hypot(ball.x - cx, ball.y - cy);
       if (ballDist > largestRadius + ball.radius) {
         ball.x = cx;
         ball.y = cy;
         ball.vx = 100;
         ball.vy = -50;
-        // Clear trail for a clean reset.
         ballTrail.length = 0;
+        particles = [];
+        // Regenerate walls based on current mode.
+        const largestRadiusNew = canvasSize / 2;
+        const smallestRadius = largestRadiusNew * 0.23;
+        localWalls =
+          mode === "normal"
+            ? generateCircleWalls(numWalls, largestRadiusNew, smallestRadius)
+            : generateAlternateWalls(numWalls, largestRadiusNew, smallestRadius);
       }
-
-      // Draw ball trail using fadeStrength.
-      // We compute each trail point's opacity as: baseAlpha * (1 - fadeStrength) * relative age.
-      // When fadeStrength is 1, the trail is invisible; when 0, the trail is fully visible.
-      const baseAlpha = 0.5; // maximum opacity for the most recent trail point
+      
+      // Update and draw particles.
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx * dt;
+        p.y += p.vy * dt;
+        p.life -= dt;
+        if (p.life <= 0) {
+          particles.splice(i, 1);
+        } else {
+          // Draw particle with fading opacity.
+          const alpha = p.life / p.maxLife;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, p.radius, 0, TWO_PI);
+          ctx.fillStyle = `rgba(255,255,255,${alpha.toFixed(2)})`;
+          ctx.fill();
+        }
+      }
+      
+      // Draw ball trail.
+      const baseAlpha = 0.5; // max opacity for most recent trail point.
       for (let i = 0; i < ballTrail.length; i++) {
         const pos = ballTrail[i];
-        const relativeAge = (i + 1) / ballTrail.length; // older points have smaller value.
+        const relativeAge = (i + 1) / ballTrail.length;
         const alpha = baseAlpha * (1 - fadeStrength) * relativeAge;
         ctx.beginPath();
         ctx.arc(pos.x, pos.y, ball.radius, 0, TWO_PI);
         ctx.fillStyle = `rgba(255,165,0,${alpha.toFixed(2)})`;
         ctx.fill();
       }
-
+      
       // Draw current ball on top.
       ball.draw(ctx);
       animationFrameId = requestAnimationFrame(animate);
     }
+    
     animationFrameId = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(animationFrameId);
-  }, [gravity, ballRadius, walls, removeWallOnPass, canvasSize, fadeStrength]);
-
+  }, [gravity, ballRadius, walls, removeWallOnPass, canvasSize, fadeStrength, mode]);
+  
   return (
     // Extra top padding (pt-20) ensures controls are visible.
     <main className="min-h-screen bg-black flex flex-col md:flex-row p-4 pt-20 overflow-x-hidden">
