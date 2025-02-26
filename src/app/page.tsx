@@ -230,7 +230,7 @@ export default function HomePage() {
   const [removeWallOnPass, setRemoveWallOnPass] = useState(true);
   // fadeSlider: 0 = permanent trail, 1 = no trail.
   const [fadeStrength, setFadeStrength] = useState(0.75);
-  const [mode, setMode] = useState<"normal" | "alternate">("normal");
+  const [mode, setMode] = useState<"normal" | "alternate">("alternate");
   const [walls, setWalls] = useState<CircleWall[]>([]);
 
   // Regenerate walls when numWalls, canvasSize, or mode changes.
@@ -261,9 +261,9 @@ export default function HomePage() {
 
     // Create the ball at the center.
     const ball = new Ball(cx, cy, ballRadius, 100, -50);
+    const localWalls = walls.map((w) => ({ ...w }));
     let lastTime = performance.now();
     let animationFrameId: number;
-    let localWalls = walls.map((w) => ({ ...w }));
 
     // Store recent ball positions for trail.
     const maxTrailLength = 30;
