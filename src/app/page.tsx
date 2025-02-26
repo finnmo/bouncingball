@@ -1,322 +1,303 @@
 "use client";
-
 import React, { useRef, useEffect, useState } from "react";
 
-interface CircleLayer {
+const TWO_PI = Math.PI * 2;
+const GAP_ANGLE = (36 * Math.PI) / 180; // 36° gap
+const CAP_LEN = 5; // length of the radial cap line
+const HALF_CAP = CAP_LEN / 2;
+const COLLISION_PAD = 2; // extra pad to trigger collision slightly early
+const POST_COLLISION_OFFSET = 0.5; // nudge after collision
+
+const LARGEST_RADIUS = 260;
+const SMALLEST_RADIUS = 60;
+const MIN_WALLS = 1;
+const MAX_WALLS = 20;
+
+interface CircleWall {
   id: number;
   radius: number;
   rotation: number;
   rotationSpeed: number;
 }
 
-// 10% gap => ~0.6283 radians
-const GAP_ANGLE = (36 * Math.PI) / 180;
-const COLLISION_PAD = 2;   // So collisions happen slightly early
-const CAP_LEN = 5;         // Short radial cap, 2.5 inside, 2.5 outside
-const HALF_CAP = CAP_LEN * 0.5;
-const POST_COLLISION_OFFSET = 0.5; // Nudge the ball off boundary after collision
+// -------------------------------------
+// Ball Class and Helper Functions
+// -------------------------------------
+class Ball {
+  x: number;
+  y: number;
+  radius: number;
+  vx: number;
+  vy: number;
 
-const LARGEST_RADIUS = 260;
-const SMALLEST_RADIUS = 60;
-const MIN_LINES = 1;
-const MAX_LINES = 20;
+  constructor(x: number, y: number, radius: number, vx: number, vy: number) {
+    this.x = x;
+    this.y = y;
+    this.radius = radius;
+    this.vx = vx;
+    this.vy = vy;
+  }
 
+  update(dt: number, gravity: number) {
+    // Apply gravity (in pixels/s², scaled by delta time)
+    this.vy += gravity * dt;
+    // Update position using velocity (pixels per second)
+    this.x += this.vx * dt;
+    this.y += this.vy * dt;
+  }
+
+  reflect(nx: number, ny: number) {
+    const dot = this.vx * nx + this.vy * ny;
+    this.vx = this.vx - 2 * dot * nx;
+    this.vy = this.vy - 2 * dot * ny;
+    // Nudge to prevent sticking to surfaces
+    this.x += nx * POST_COLLISION_OFFSET;
+    this.y += ny * POST_COLLISION_OFFSET;
+  }
+
+  draw(ctx: CanvasRenderingContext2D) {
+    ctx.beginPath();
+    ctx.arc(this.x, this.y, this.radius, 0, TWO_PI);
+    ctx.fillStyle = "orange";
+    ctx.fill();
+  }
+}
+
+// Generate walls evenly spaced between SMALLEST_RADIUS and LARGEST_RADIUS
+function generateCircleWalls(count: number): CircleWall[] {
+  if (count <= 0) return [];
+  if (count === 1) {
+    return [{ id: 0, radius: LARGEST_RADIUS, rotation: 0, rotationSpeed: 0.005 }];
+  }
+  const walls: CircleWall[] = [];
+  const step = (LARGEST_RADIUS - SMALLEST_RADIUS) / (count - 1);
+  for (let i = 0; i < count; i++) {
+    const r = SMALLEST_RADIUS + step * i;
+    const speed = 0.003 + 0.002 * (i % 2 === 0 ? 1 : -1);
+    walls.push({ id: i, radius: r, rotation: 0, rotationSpeed: speed });
+  }
+  return walls;
+}
+
+// Normalize an angle to [0, TWO_PI)
+function normalizeAngle(angle: number): number {
+  return (angle % TWO_PI + TWO_PI) % TWO_PI;
+}
+
+// Check if an angle lies within the wall’s gap region.
+function isAngleInGap(angle: number, gapStart: number): boolean {
+  const normAngle = normalizeAngle(angle);
+  const normGapStart = normalizeAngle(gapStart);
+  const normGapEnd = normalizeAngle(gapStart + GAP_ANGLE);
+  if (normGapStart < normGapEnd) {
+    return normAngle >= normGapStart && normAngle < normGapEnd;
+  } else {
+    return normAngle >= normGapStart || normAngle < normGapEnd;
+  }
+}
+
+// Compute the shortest distance from a point to a line segment.
+function pointToSegmentDistance(
+  px: number,
+  py: number,
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number
+): number {
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const lenSq = dx * dx + dy * dy;
+  if (lenSq === 0) return Math.hypot(px - x1, py - y1);
+  let t = ((px - x1) * dx + (py - y1) * dy) / lenSq;
+  t = Math.max(0, Math.min(1, t));
+  const projX = x1 + t * dx;
+  const projY = y1 + t * dy;
+  return Math.hypot(px - projX, py - projY);
+}
+
+// -------------------------------------
+// Collision Detection Functions
+// -------------------------------------
+
+function checkArcCollision(
+  ball: Ball,
+  prevX: number,
+  prevY: number,
+  cx: number,
+  cy: number,
+  wall: CircleWall
+): { collision: boolean; normalX: number; normalY: number } | null {
+  const currDist = Math.hypot(ball.x - cx, ball.y - cy);
+  const prevDist = Math.hypot(prevX - cx, prevY - cy);
+  if (
+    Math.abs(currDist - wall.radius) <= ball.radius + COLLISION_PAD &&
+    Math.abs(prevDist - wall.radius) > ball.radius + COLLISION_PAD
+  ) {
+    const collisionAngle = Math.atan2(ball.y - cy, ball.x - cx);
+    if (!isAngleInGap(collisionAngle, wall.rotation)) {
+      const nx = (ball.x - cx) / currDist;
+      const ny = (ball.y - cy) / currDist;
+      return { collision: true, normalX: nx, normalY: ny };
+    }
+  }
+  return null;
+}
+
+function checkRadialCap(
+  ball: Ball,
+  cx: number,
+  cy: number,
+  wall: CircleWall,
+  capAngle: number
+): { collision: boolean; normalX: number; normalY: number } | null {
+  const startX = cx + (wall.radius - HALF_CAP) * Math.cos(capAngle);
+  const startY = cy + (wall.radius - HALF_CAP) * Math.sin(capAngle);
+  const endX = cx + (wall.radius + HALF_CAP) * Math.cos(capAngle);
+  const endY = cy + (wall.radius + HALF_CAP) * Math.sin(capAngle);
+  const d = pointToSegmentDistance(ball.x, ball.y, startX, startY, endX, endY);
+  if (d <= ball.radius + COLLISION_PAD) {
+    const dx = endX - startX;
+    const dy = endY - startY;
+    const lenSq = dx * dx + dy * dy;
+    let t = ((ball.x - startX) * dx + (ball.y - startY) * dy) / lenSq;
+    t = Math.max(0, Math.min(1, t));
+    const projX = startX + t * dx;
+    const projY = startY + t * dy;
+    let nx = ball.x - projX;
+    let ny = ball.y - projY;
+    const mag = Math.hypot(nx, ny);
+    if (mag > 0) {
+      nx /= mag;
+      ny /= mag;
+    } else {
+      const dist = Math.hypot(ball.x - cx, ball.y - cy);
+      nx = (ball.x - cx) / dist;
+      ny = (ball.y - cy) / dist;
+    }
+    return { collision: true, normalX: nx, normalY: ny };
+  }
+  return null;
+}
+
+// -------------------------------------
+// Main Component with Animation Loop
+// -------------------------------------
 export default function HomePage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  // ------------------------------
-  // 1) USER CONTROLS
-  // ------------------------------
-  const [gravity, setGravity] = useState(0.1);
+  // Updated gravity slider range for a visible effect.
+  const [gravity, setGravity] = useState(500); // in pixels/s²
   const [ballRadius, setBallRadius] = useState(10);
-
-  // Default number of circles to 10
-  const [numLines, setNumLines] = useState(10);
-
-  const [removeCircleOnPass, setRemoveCircleOnPass] = useState(false);
-
-  // Default the trail fade to 0.2
+  const [numWalls, setNumWalls] = useState(10);
+  const [removeWallOnPass, setRemoveWallOnPass] = useState(false);
   const [fadeStrength, setFadeStrength] = useState(0.2);
+  const [walls, setWalls] = useState<CircleWall[]>([]);
 
-  const [layers, setLayers] = useState<CircleLayer[]>([]);
-
-  // Generate circle layers whenever numLines changes
   useEffect(() => {
-    setLayers(generateLayers(numLines));
-  }, [numLines]);
+    setWalls(generateCircleWalls(numWalls));
+  }, [numWalls]);
 
-  function generateLayers(count: number): CircleLayer[] {
-    if (count <= 0) return [];
-    if (count === 1) {
-      return [
-        { id: 0, radius: LARGEST_RADIUS, rotation: 0, rotationSpeed: 0.005 },
-      ];
-    }
-    const arr: CircleLayer[] = [];
-    const step = (LARGEST_RADIUS - SMALLEST_RADIUS) / (count - 1);
-    for (let i = 0; i < count; i++) {
-      const r = SMALLEST_RADIUS + step * i;
-      const speed = 0.003 + 0.002 * ((i % 2 === 0 ? 1 : -1) * i);
-      arr.push({
-        id: i,
-        radius: r,
-        rotation: 0,
-        rotationSpeed: speed,
-      });
-    }
-    return arr;
-  }
-
-  // ------------------------------
-  // 2) ANIMATION
-  // ------------------------------
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-
-    let animationId: number;
     const cw = canvas.width;
     const ch = canvas.height;
     const cx = cw / 2;
     const cy = ch / 2;
 
-    // BALL
-    let x = cx;
-    let y = cy;
-    let vx = 2;
-    let vy = 0;
+    // Create a ball at the center with an initial velocity.
+    const ball = new Ball(cx, cy, ballRadius, 100, -50);
+    let lastTime = performance.now();
+    let animationFrameId: number;
+    let localWalls = walls.map((w) => ({ ...w }));
 
-    let localLayers = layers.map((l) => ({ ...l }));
+    function animate(time: number) {
+      const dt = (time - lastTime) / 1000;
+      lastTime = time;
 
-    /** Perfectly elastic reflection */
-    function reflectVelocity(vxIn: number, vyIn: number, nx: number, ny: number) {
-      const dot = vxIn * nx + vyIn * ny;
-      const rx = vxIn - 2 * dot * nx;
-      const ry = vyIn - 2 * dot * ny;
-      return [rx, ry];
-    }
-
-    /** Check if angle is within the circle's gap [rotation, rotation+GAP_ANGLE). */
-    function isInGap(angle: number, rotation: number): boolean {
-      const a = (angle + 2 * Math.PI) % (2 * Math.PI);
-      const start = (rotation + 2 * Math.PI) % (2 * Math.PI);
-      const diff = (a - start + 2 * Math.PI) % (2 * Math.PI);
-      return diff < GAP_ANGLE;
-    }
-
-    function render() {
+      // Create a trailing effect.
       if(!ctx) return;
-      // a) Partially erase the old frame for the ball’s trail
       ctx.fillStyle = `rgba(0,0,0,${fadeStrength})`;
       ctx.fillRect(0, 0, cw, ch);
 
-      // b) Redraw circles at full opacity => no streak on them
-      localLayers.forEach((layer) => {
-        layer.rotation += layer.rotationSpeed;
+      // Update wall rotations.
+      localWalls.forEach((wall) => {
+        wall.rotation = normalizeAngle(wall.rotation + wall.rotationSpeed * dt * 60);
       });
-      drawAllCircles(ctx, cx, cy, localLayers);
 
-      // c) Gravity + Move
-      vy += gravity;
-      const oldX = x;
-      const oldY = y;
-      x += vx;
-      y += vy;
+      // Save previous ball position.
+      const prevX = ball.x;
+      const prevY = ball.y;
+      ball.update(dt, gravity);
 
-      // Distances
-      const dx = x - cx;
-      const dy = y - cy;
-      const dist = Math.sqrt(dx * dx + dy * dy);
-      const angle = Math.atan2(dy, dx);
-
-      const oldDx = oldX - cx;
-      const oldDy = oldY - cy;
-      const oldDist = Math.sqrt(oldDx * oldDx + oldDy * oldDy);
-
-      let collidedThisFrame = false;
-
-      // d) Check circle boundary collisions
-      for (let i = 0; i < localLayers.length; i++) {
-        if (collidedThisFrame) break;
-
-        const layer = localLayers[i];
-        const { radius, rotation } = layer;
-
-        // boundaryIn / boundaryOut with collision pad
-        const boundaryIn = radius - ballRadius - COLLISION_PAD;
-        const boundaryOut = radius + ballRadius + COLLISION_PAD;
-
-        // Cross detection
-        const wasInsideIn = oldDist < boundaryIn;
-        const isInsideIn = dist < boundaryIn;
-        const crossedInOut = wasInsideIn && !isInsideIn;
-        const crossedInIn = !wasInsideIn && isInsideIn;
-
-        const wasInsideOut = oldDist < boundaryOut;
-        const isInsideOut = dist < boundaryOut;
-        const crossedOutOut = wasInsideOut && !isInsideOut;
-        const crossedOutIn = !wasInsideOut && isInsideOut;
-
-        const boundaryCrossings = [
-          { crossed: crossedInOut, which: "inOut" },
-          { crossed: crossedInIn, which: "inIn" },
-          { crossed: crossedOutOut, which: "outOut" },
-          { crossed: crossedOutIn, which: "outIn" },
-        ];
-
-        for (const b of boundaryCrossings) {
-          if (!b.crossed) continue;
-
-          if (!isInGap(angle, rotation)) {
-            // revert + reflect
-            x = oldX;
-            y = oldY;
-            const ndx = x - cx;
-            const ndy = y - cy;
-            const nDist = Math.sqrt(ndx * ndx + ndy * ndy);
-            if (nDist > 0) {
-              const nx = ndx / nDist;
-              const ny = ndy / nDist;
-              [vx, vy] = reflectVelocity(vx, vy, nx, ny);
-
-              // nudge so no freezing
-              x += POST_COLLISION_OFFSET * nx;
-              y += POST_COLLISION_OFFSET * ny;
-            }
-            collidedThisFrame = true;
-            break;
-          } else {
-            // passes through gap
-            if (removeCircleOnPass) {
-              localLayers = localLayers.filter((ly) => ly.id !== layer.id);
-            }
+      // Collision detection for each wall.
+      for (let i = 0; i < localWalls.length; i++) {
+        const wall = localWalls[i];
+        const arcCollision = checkArcCollision(ball, prevX, prevY, cx, cy, wall);
+        if (arcCollision && arcCollision.collision) {
+          ball.x = prevX;
+          ball.y = prevY;
+          ball.reflect(arcCollision.normalX, arcCollision.normalY);
+          break;
+        }
+        const capCollision1 = checkRadialCap(ball, cx, cy, wall, wall.rotation);
+        if (capCollision1 && capCollision1.collision) {
+          ball.x = prevX;
+          ball.y = prevY;
+          ball.reflect(capCollision1.normalX, capCollision1.normalY);
+          break;
+        }
+        const capCollision2 = checkRadialCap(ball, cx, cy, wall, wall.rotation + GAP_ANGLE);
+        if (capCollision2 && capCollision2.collision) {
+          ball.x = prevX;
+          ball.y = prevY;
+          ball.reflect(capCollision2.normalX, capCollision2.normalY);
+          break;
+        }
+        // Optionally remove the wall if the ball passes through its gap.
+        const ballDist = Math.hypot(ball.x - cx, ball.y - cy);
+        if (
+          Math.abs(ballDist - wall.radius) < ball.radius &&
+          isAngleInGap(Math.atan2(ball.y - cy, ball.x - cx), wall.rotation)
+        ) {
+          if (removeWallOnPass) {
+            localWalls.splice(i, 1);
+            i--;
           }
         }
       }
 
-      // e) Collisions with radial caps at angles (rotation) + (rotation+GAP_ANGLE)
-      if (!collidedThisFrame) {
-        for (let i = 0; i < localLayers.length; i++) {
-          if (collidedThisFrame) break;
-
-          const layer = localLayers[i];
-          const angles = [layer.rotation, layer.rotation + GAP_ANGLE];
-          for (const boundaryAngle of angles) {
-            if (
-              checkRadialCapCollision(
-                oldX,
-                oldY,
-                x,
-                y,
-                cx,
-                cy,
-                boundaryAngle,
-                layer.radius,
-                ballRadius
-              )
-            ) {
-              // revert + reflect
-              x = oldX;
-              y = oldY;
-              const ndx = x - cx;
-              const ndy = y - cy;
-              const nDist = Math.sqrt(ndx * ndx + ndy * ndy);
-              if (nDist > 0) {
-                const nx = ndx / nDist;
-                const ny = ndy / nDist;
-                [vx, vy] = reflectVelocity(vx, vy, nx, ny);
-
-                x += POST_COLLISION_OFFSET * nx;
-                y += POST_COLLISION_OFFSET * ny;
-              }
-              collidedThisFrame = true;
-              break;
-            }
-          }
-        }
-      }
-
-      // f) If speed ~ 0 => nudge
-      const speed = Math.sqrt(vx * vx + vy * vy);
-      if (speed < 0.0001) {
-        vx += (Math.random() - 0.5) * 0.2;
-        vy += (Math.random() - 0.5) * 0.2;
-      }
-
-      // g) Draw ball
-      drawBall(ctx, x, y, ballRadius);
-
-      animationId = requestAnimationFrame(render);
+      drawWalls(ctx, cx, cy, localWalls);
+      ball.draw(ctx);
+      animationFrameId = requestAnimationFrame(animate);
     }
+    animationFrameId = requestAnimationFrame(animate);
+    return () => cancelAnimationFrame(animationFrameId);
+  }, [gravity, ballRadius, walls, removeWallOnPass, fadeStrength]);
 
-    animationId = requestAnimationFrame(render);
-    return () => cancelAnimationFrame(animationId);
-  }, [gravity, ballRadius, layers, removeCircleOnPass, fadeStrength]);
-
-  // ------------------------------
-  // 3) RESPONSIVE UI LAYOUT
-  // ------------------------------
   return (
-    <main
-      className="
-        min-h-screen bg-black 
-        flex 
-        flex-col 
-        md:flex-row 
-        p-4
-      "
-    >
-      {/* Canvas Area */}
-      <div 
-        className="
-          flex-1 
-          flex 
-          items-center 
-          justify-center 
-          mb-4 md:mb-0
-        "
-      >
-        <canvas 
-          ref={canvasRef} 
-          width={600} 
-          height={600} 
-          className="bg-black"
-        />
+    <main className="min-h-screen bg-black flex flex-col md:flex-row p-4">
+      <div className="flex-1 flex items-center justify-center mb-4 md:mb-0">
+        <canvas ref={canvasRef} width={600} height={600} className="bg-black" />
       </div>
-
-      {/* Controls Area */}
-      <div 
-        className="
-          w-full 
-          md:w-72 
-          md:ml-4
-          text-white 
-          flex 
-          flex-col 
-          gap-4
-        "
-      >
+      <div className="w-full md:w-72 md:ml-4 text-white flex flex-col gap-4">
         <div>
-          <label className="block mb-1 text-sm">
-            Gravity: {gravity.toFixed(2)}
-          </label>
+          <label className="block mb-1 text-sm">Gravity: {gravity.toFixed(0)}</label>
           <input
             type="range"
             min="0"
-            max="0.5"
-            step="0.01"
+            max="1000"
+            step="10"
             value={gravity}
             onChange={(e) => setGravity(Number(e.target.value))}
             className="w-full"
           />
         </div>
-
         <div>
-          <label className="block mb-1 text-sm">
-            Ball Radius: {ballRadius}
-          </label>
+          <label className="block mb-1 text-sm">Ball Radius: {ballRadius}</label>
           <input
             type="range"
             min="5"
@@ -327,38 +308,31 @@ export default function HomePage() {
             className="w-full"
           />
         </div>
-
         <div>
-          <label className="block mb-1 text-sm">
-            Number of Circles: {numLines}
-          </label>
+          <label className="block mb-1 text-sm">Number of Walls: {numWalls}</label>
           <input
             type="range"
-            min={MIN_LINES}
-            max={MAX_LINES}
+            min={MIN_WALLS}
+            max={MAX_WALLS}
             step="1"
-            value={numLines}
-            onChange={(e) => setNumLines(Number(e.target.value))}
+            value={numWalls}
+            onChange={(e) => setNumWalls(Number(e.target.value))}
             className="w-full"
           />
         </div>
-
         <div className="flex items-center gap-2">
           <input
             type="checkbox"
-            id="removeCircleOnPass"
-            checked={removeCircleOnPass}
-            onChange={(e) => setRemoveCircleOnPass(e.target.checked)}
+            id="removeWallOnPass"
+            checked={removeWallOnPass}
+            onChange={(e) => setRemoveWallOnPass(e.target.checked)}
           />
-          <label htmlFor="removeCircleOnPass" className="text-sm">
-            Remove Circle When Ball Passes Gap
+          <label htmlFor="removeWallOnPass" className="text-sm">
+            Remove Wall When Ball Passes Gap
           </label>
         </div>
-
         <div>
-          <label className="block mb-1 text-sm">
-            Trail Fade: {fadeStrength.toFixed(2)}
-          </label>
+          <label className="block mb-1 text-sm">Trail Fade: {fadeStrength.toFixed(2)}</label>
           <input
             type="range"
             min="0"
@@ -368,138 +342,55 @@ export default function HomePage() {
             onChange={(e) => setFadeStrength(Number(e.target.value))}
             className="w-full"
           />
-          <p className="text-xs opacity-80">
-            0 = permanent ghost, 1 = no trail
-          </p>
+          <p className="text-xs opacity-80">0 = permanent trail, 1 = no trail</p>
         </div>
       </div>
     </main>
   );
 }
 
-/** Draw arcs from (rotation + GAP_ANGLE) => (rotation + 2π) and short radial caps. */
-function drawAllCircles(
+// -------------------------------------
+// Drawing Helpers
+// -------------------------------------
+function drawWalls(
   ctx: CanvasRenderingContext2D,
   cx: number,
   cy: number,
-  layers: CircleLayer[]
+  walls: CircleWall[]
 ) {
   ctx.save();
   ctx.strokeStyle = "white";
   ctx.lineWidth = 3;
   ctx.lineCap = "round";
-
-  for (const layer of layers) {
-    // main arc
-    const startAngle = layer.rotation + GAP_ANGLE;
-    const endAngle = layer.rotation + 2 * Math.PI;
+  walls.forEach((wall) => {
+    const startAngle = wall.rotation + GAP_ANGLE;
+    const endAngle = wall.rotation + TWO_PI;
     ctx.beginPath();
-    ctx.arc(cx, cy, layer.radius, startAngle, endAngle, false);
+    ctx.arc(cx, cy, wall.radius, startAngle, endAngle, false);
     ctx.stroke();
-
-    // radial caps at angles = (layer.rotation) & (layer.rotation + GAP_ANGLE)
-    const angles = [layer.rotation, layer.rotation + GAP_ANGLE];
-    for (const boundaryAngle of angles) {
-      drawRadialCap(ctx, cx, cy, layer.radius, boundaryAngle);
-    }
-  }
-
+    drawRadialCap(ctx, cx, cy, wall.radius, wall.rotation);
+    drawRadialCap(ctx, cx, cy, wall.radius, wall.rotation + GAP_ANGLE);
+  });
   ctx.restore();
 }
 
-/** Short radial cap line is 5 px total, half inside and half outside circle radius. */
 function drawRadialCap(
   ctx: CanvasRenderingContext2D,
   cx: number,
   cy: number,
-  r: number,
+  radius: number,
   angle: number
 ) {
   const cosA = Math.cos(angle);
   const sinA = Math.sin(angle);
-
-  const startR = r - HALF_CAP; // center of line is at radius=r
-  const endR = r + HALF_CAP;
-
-  const sx = cx + startR * cosA;
-  const sy = cy + startR * sinA;
-  const ex = cx + endR * cosA;
-  const ey = cy + endR * sinA;
-
+  const inner = radius - HALF_CAP;
+  const outer = radius + HALF_CAP;
+  const sx = cx + inner * cosA;
+  const sy = cy + inner * sinA;
+  const ex = cx + outer * cosA;
+  const ey = cy + outer * sinA;
   ctx.beginPath();
   ctx.moveTo(sx, sy);
   ctx.lineTo(ex, ey);
   ctx.stroke();
-}
-
-/** Draw the ball. */
-function drawBall(ctx: CanvasRenderingContext2D, bx: number, by: number, br: number) {
-  ctx.beginPath();
-  ctx.arc(bx, by, br, 0, 2 * Math.PI);
-  ctx.fillStyle = "orange";
-  ctx.fill();
-}
-
-/** 
- * We define a radial cap line from (r - 2.5) to (r + 2.5) at 'boundaryAngle'.
- * If ball’s new center is within ballRadius => collision.
- */
-function checkRadialCapCollision(
-  oldX: number, oldY: number,
-  newX: number, newY: number,
-  cx: number, cy: number,
-  boundaryAngle: number,
-  r: number,
-  ballR: number
-): boolean {
-  const cosA = Math.cos(boundaryAngle);
-  const sinA = Math.sin(boundaryAngle);
-
-  const startR = r - HALF_CAP;
-  const endR   = r + HALF_CAP;
-
-  const sx = cx + startR*cosA;
-  const sy = cy + startR*sinA;
-  const ex = cx + endR*cosA;
-  const ey = cy + endR*sinA;
-
-  const dist = distPointToSegment(newX, newY, sx, sy, ex, ey);
-  return dist <= ballR;
-}
-
-/** distance from point(px,py) to line segment(sx,sy)->(ex,ey). */
-function distPointToSegment(
-  px: number, py: number,
-  sx: number, sy: number,
-  ex: number, ey: number
-): number {
-  const vx = ex - sx;
-  const vy = ey - sy;
-  const wx = px - sx;
-  const wy = py - sy;
-
-  const segLen2 = vx*vx + vy*vy;
-  if (segLen2 < 1e-8) {
-    // segment is basically a point
-    return Math.sqrt(wx*wx + wy*wy);
-  }
-
-  const dot = wx*vx + wy*vy;
-  const t = dot / segLen2;
-
-  let closestX, closestY;
-  if (t <= 0) {
-    closestX = sx;
-    closestY = sy;
-  } else if (t >= 1) {
-    closestX = ex;
-    closestY = ey;
-  } else {
-    closestX = sx + t*vx;
-    closestY = sy + t*vy;
-  }
-
-  const dx = px - closestX;
-  const dy = py - closestY;
-  return Math.sqrt(dx*dx + dy*dy);
 }
