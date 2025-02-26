@@ -38,7 +38,7 @@ export default function RootLayout({
         <div className="fixed inset-0 -z-10 bg-[url('/Clocks-Money-BG.png')] opacity-10" />
         <Suspense
           fallback={
-            <div className="min-h-screen bg-[#FFCB3C] flex items-center justify-center">
+            <div className="min-h-screen bg-gray-700 flex items-center justify-center">
               <div className="text-white text-xl">Loading...</div>
             </div>
           }

@@ -3,7 +3,7 @@ import React, { useRef, useEffect, useState } from "react";
 
 const TWO_PI = Math.PI * 2;
 const GAP_ANGLE = (36 * Math.PI) / 180; // 36° gap
-const CAP_LEN = 5; // length of the radial cap line
+const CAP_LEN = 2; // length of the radial cap line
 const HALF_CAP = CAP_LEN / 2;
 const COLLISION_PAD = 2; // extra pad for early collision
 const POST_COLLISION_OFFSET = 0.5; // nudge after collision
@@ -261,9 +261,10 @@ export default function HomePage() {
 
     // Create the ball at the center.
     const ball = new Ball(cx, cy, ballRadius, 100, -50);
+    const localWalls = walls.map((w) => ({ ...w }));
+
     let lastTime = performance.now();
     let animationFrameId: number;
-    let localWalls = walls.map((w) => ({ ...w }));
 
     function animate(time: number) {
       const dt = (time - lastTime) / 1000;
