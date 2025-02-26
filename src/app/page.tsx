@@ -252,6 +252,24 @@ function createShatterParticles(
   return particles;
 }
 
+function createFireworkParticles(cx: number, cy: number, count: number = 100): Particle[] {
+  // Spawn more particles for a grander firework, each with a random color.
+  const particles: Particle[] = [];
+  for (let i = 0; i < count; i++) {
+    const angle = Math.random() * TWO_PI;
+    const speed = Math.random() * 150 + 50;
+    const vx = Math.cos(angle) * speed;
+    const vy = Math.sin(angle) * speed;
+    const radius = Math.random() * 2 + 1;
+    const maxLife = Math.random() * 0.5 + 0.5;
+    const hue = Math.floor(Math.random() * 360);
+    const color = `hsl(${hue}, 100%, 50%)`;
+    particles.push({ x: cx, y: cy, vx, vy, radius, life: maxLife, maxLife, color });
+  }
+  return particles;
+}
+
+
 // ------------------------------
 // Main Component: Responsive Canvas & Animation
 // ------------------------------
@@ -305,7 +323,7 @@ export default function HomePage() {
     const cx = cw / 2;
     const cy = ch / 2;
     const largestRadius = cw / 2;
-
+  
     // Create the ball at the center.
     const ball = new Ball(cx, cy, ballRadius, 100, -50);
     // Make a local copy of walls.
@@ -314,100 +332,156 @@ export default function HomePage() {
     let animationFrameId: number;
     // Particle array for shatter effects.
     let particles: Particle[] = [];
+    // Firework particles for celebration.
+    let fireworks: Particle[] = [];
     // Store recent ball positions for trail.
     const maxTrailLength = 30;
     const ballTrail: { x: number; y: number }[] = [];
-
+  
+    // Flag and timer for celebration mode.
+    let celebrating = false;
+    let celebrationStartTime = 0;
+  
     function animate(time: number) {
       const dt = (time - lastTime) / 1000;
       lastTime = time;
       
-      // Clear canvas completely (so circles have no trail).
+      // Clear canvas.
       if(!ctx) return;
       ctx.clearRect(0, 0, cw, ch);
       
-      // Draw walls (circles) at full opacity.
+      // Always draw the walls.
       drawWalls(ctx, cx, cy, localWalls);
       
       // Update wall rotations.
       localWalls.forEach((wall) => {
         wall.rotation = normalizeAngle(wall.rotation + wall.rotationSpeed * dt * 60);
       });
-      
-      const prevX = ball.x;
-      const prevY = ball.y;
-      ball.update(dt, gravity);
-      
-      // Append current ball position to trail.
-      ballTrail.push({ x: ball.x, y: ball.y });
-      if (ballTrail.length > maxTrailLength) {
-        ballTrail.shift();
-      }
-      
-      // Check collisions and remove (shatter) walls.
-      for (let i = 0; i < localWalls.length; i++) {
-        const wall = localWalls[i];
-        const arcCollision = checkArcCollision(ball, prevX, prevY, cx, cy, wall);
-        if (arcCollision && arcCollision.collision) {
-          ball.x = prevX;
-          ball.y = prevY;
-          ball.reflect(arcCollision.normalX, arcCollision.normalY);
-          break;
+  
+      // --- Normal Mode: Update ball physics if not celebrating ---
+      if (!celebrating) {
+        const prevX = ball.x;
+        const prevY = ball.y;
+        ball.update(dt, gravity);
+        
+        // Update ball trail.
+        ballTrail.push({ x: ball.x, y: ball.y });
+        if (ballTrail.length > maxTrailLength) {
+          ballTrail.shift();
         }
-        const capCollision1 = checkRadialCap(ball, cx, cy, wall, wall.rotation);
-        if (capCollision1 && capCollision1.collision) {
-          ball.x = prevX;
-          ball.y = prevY;
-          ball.reflect(capCollision1.normalX, capCollision1.normalY);
-          break;
+        
+        // Check collisions and remove walls.
+        for (let i = 0; i < localWalls.length; i++) {
+          const wall = localWalls[i];
+          const arcCollision = checkArcCollision(ball, prevX, prevY, cx, cy, wall);
+          if (arcCollision && arcCollision.collision) {
+            ball.x = prevX;
+            ball.y = prevY;
+            ball.reflect(arcCollision.normalX, arcCollision.normalY);
+            break;
+          }
+          const capCollision1 = checkRadialCap(ball, cx, cy, wall, wall.rotation);
+          if (capCollision1 && capCollision1.collision) {
+            ball.x = prevX;
+            ball.y = prevY;
+            ball.reflect(capCollision1.normalX, capCollision1.normalY);
+            break;
+          }
+          const capCollision2 = checkRadialCap(
+            ball,
+            cx,
+            cy,
+            wall,
+            wall.rotation + GAP_ANGLE
+          );
+          if (capCollision2 && capCollision2.collision) {
+            ball.x = prevX;
+            ball.y = prevY;
+            ball.reflect(capCollision2.normalX, capCollision2.normalY);
+            break;
+          }
+          // Remove wall when ball passes through the gap.
+          const ballDist = Math.hypot(ball.x - cx, ball.y - cy);
+          if (
+            removeWallOnPass &&
+            Math.abs(ballDist - wall.radius) < ball.radius &&
+            isAngleInGap(Math.atan2(ball.y - cy, ball.x - cx), wall.rotation)
+          ) {
+            const shatter = createShatterParticles(wall, cx, cy, 20);
+            particles.push(...shatter);
+            localWalls.splice(i, 1);
+            i--;
+          }
         }
-        const capCollision2 = checkRadialCap(
-          ball,
-          cx,
-          cy,
-          wall,
-          wall.rotation + GAP_ANGLE
-        );
-        if (capCollision2 && capCollision2.collision) {
-          ball.x = prevX;
-          ball.y = prevY;
-          ball.reflect(capCollision2.normalX, capCollision2.normalY);
-          break;
-        }
-        // If removeWallOnPass is set and the ball passes through the gap,
-        // remove the wall AND spawn shatter particles.
+        
         const ballDist = Math.hypot(ball.x - cx, ball.y - cy);
-        if (
-          removeWallOnPass &&
-          Math.abs(ballDist - wall.radius) < ball.radius &&
-          isAngleInGap(Math.atan2(ball.y - cy, ball.x - cx), wall.rotation)
-        ) {
-          const shatter = createShatterParticles(wall, cx, cy, 20);
-          particles.push(...shatter);
-          localWalls.splice(i, 1);
-          i--;
+        if (!celebrating && ballDist > largestRadius + ball.radius) {
+          celebrating = true;
+          celebrationStartTime = time;
+          // Define multiple explosion points:
+          const explosionPoints = [
+            { x: ball.x, y: ball.y }, // explosion at ball exit location
+            { x: Math.random() * cw, y: Math.random() * ch },
+            { x: Math.random() * cw, y: Math.random() * ch },
+            { x: Math.random() * cw, y: Math.random() * ch },
+            { x: Math.random() * cw, y: Math.random() * ch },
+            { x: Math.random() * cw, y: Math.random() * ch },
+            { x: Math.random() * cw, y: Math.random() * ch },
+          ];
+          fireworks = [];
+          explosionPoints.forEach((point) => {
+            // Generate 50 particles for each explosion.
+            fireworks.push(...createFireworkParticles(point.x, point.y, 50));
+          });
         }
       }
       
-      // Reset ball and walls if ball exits the outer wall.
-      const ballDist = Math.hypot(ball.x - cx, ball.y - cy);
-      if (ballDist > largestRadius + ball.radius) {
-        ball.x = cx;
-        ball.y = cy;
-        ball.vx = 100;
-        ball.vy = -50;
-        ballTrail.length = 0;
-        particles = [];
-        // Regenerate walls based on current mode.
-        const largestRadiusNew = canvasSize / 2;
-        const smallestRadius = largestRadiusNew * 0.23;
-        localWalls =
-          mode === "normal"
-            ? generateCircleWalls(numWalls, largestRadiusNew, smallestRadius)
-            : generateAlternateWalls(numWalls, largestRadiusNew, smallestRadius);
+      // --- Celebration Mode: Update and draw fireworks ---
+      if (celebrating) {
+        // Update fireworks particles.
+        for (let i = fireworks.length - 1; i >= 0; i--) {
+          const fp = fireworks[i];
+          fp.x += fp.vx * dt;
+          fp.y += fp.vy * dt;
+          fp.life -= dt;
+          if (fp.life <= 0) {
+            fireworks.splice(i, 1);
+          } else {
+            // Draw particle with fading opacity.
+            const alpha = fp.life / fp.maxLife;
+            let colorStr = fp.color;
+            // Convert hsl() to hsla() for transparency.
+            if (colorStr.startsWith("hsl(")) {
+              colorStr = colorStr.replace("hsl(", "hsla(").replace(")", `,${alpha.toFixed(2)})`);
+            }
+            ctx.beginPath();
+            ctx.arc(fp.x, fp.y, fp.radius, 0, TWO_PI);
+            ctx.fillStyle = colorStr;
+            ctx.fill();
+          }
+        }
+        // End celebration after 3 seconds.
+        if (time - celebrationStartTime > 1300) {
+          celebrating = false;
+          // Reset the ball.
+          ball.x = cx;
+          ball.y = cy;
+          ball.vx = 100;
+          ball.vy = -50;
+          ballTrail.length = 0;
+          // Regenerate walls based on current mode.
+          const largestRadiusNew = canvasSize / 2;
+          const smallestRadius = largestRadiusNew * 0.23;
+          localWalls =
+            mode === "normal"
+              ? generateCircleWalls(numWalls, largestRadiusNew, smallestRadius)
+              : generateAlternateWalls(numWalls, largestRadiusNew, smallestRadius);
+          // Clear any remaining fireworks.
+          fireworks = [];
+        }
       }
       
-      // Update and draw particles.
+      // --- Update and draw shatter particles (if any) ---
       for (let i = particles.length - 1; i >= 0; i--) {
         const p = particles[i];
         p.x += p.vx * dt;
@@ -416,7 +490,6 @@ export default function HomePage() {
         if (p.life <= 0) {
           particles.splice(i, 1);
         } else {
-          // Draw particle with fading opacity.
           const alpha = p.life / p.maxLife;
           ctx.beginPath();
           ctx.arc(p.x, p.y, p.radius, 0, TWO_PI);
@@ -425,26 +498,28 @@ export default function HomePage() {
         }
       }
       
-      // Draw ball trail.
-      const baseAlpha = 0.5; // max opacity for most recent trail point.
-      for (let i = 0; i < ballTrail.length; i++) {
-        const pos = ballTrail[i];
-        const relativeAge = (i + 1) / ballTrail.length;
-        const alpha = baseAlpha * (1 - fadeStrength) * relativeAge;
-        ctx.beginPath();
-        ctx.arc(pos.x, pos.y, ball.radius, 0, TWO_PI);
-        ctx.fillStyle = `rgba(255,165,0,${alpha.toFixed(2)})`;
-        ctx.fill();
+      // --- Draw ball trail and ball if not in celebration ---
+      if (!celebrating) {
+        const baseAlpha = 0.5;
+        for (let i = 0; i < ballTrail.length; i++) {
+          const pos = ballTrail[i];
+          const relativeAge = (i + 1) / ballTrail.length;
+          const alpha = baseAlpha * (1 - fadeStrength) * relativeAge;
+          ctx.beginPath();
+          ctx.arc(pos.x, pos.y, ball.radius, 0, TWO_PI);
+          ctx.fillStyle = `rgba(255,165,0,${alpha.toFixed(2)})`;
+          ctx.fill();
+        }
+        ball.draw(ctx);
       }
       
-      // Draw current ball on top.
-      ball.draw(ctx);
       animationFrameId = requestAnimationFrame(animate);
     }
     
     animationFrameId = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(animationFrameId);
   }, [gravity, ballRadius, walls, removeWallOnPass, canvasSize, fadeStrength, mode]);
+  
   
   return (
     // Extra top padding (pt-20) ensures controls are visible.
