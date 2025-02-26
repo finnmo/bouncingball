@@ -5,24 +5,25 @@ const TWO_PI = Math.PI * 2;
 const GAP_ANGLE = (36 * Math.PI) / 180; // 36° gap
 const CAP_LEN = 5; // length of the radial cap line
 const HALF_CAP = CAP_LEN / 2;
-const COLLISION_PAD = 2; // extra pad to trigger collision slightly early
+const COLLISION_PAD = 2; // extra pad for early collision
 const POST_COLLISION_OFFSET = 0.5; // nudge after collision
 
-const LARGEST_RADIUS = 260;
-const SMALLEST_RADIUS = 60;
 const MIN_WALLS = 1;
 const MAX_WALLS = 20;
+const MAX_CANVAS_SIZE = 600; // maximum canvas size on desktop
 
+// Extend the wall interface to optionally include a color.
 interface CircleWall {
   id: number;
   radius: number;
   rotation: number;
   rotationSpeed: number;
+  color?: string;
 }
 
-// -------------------------------------
+// ------------------------------
 // Ball Class and Helper Functions
-// -------------------------------------
+// ------------------------------
 class Ball {
   x: number;
   y: number;
@@ -39,9 +40,8 @@ class Ball {
   }
 
   update(dt: number, gravity: number) {
-    // Apply gravity (in pixels/s², scaled by delta time)
+    // Apply gravity (pixels/s² scaled by dt)
     this.vy += gravity * dt;
-    // Update position using velocity (pixels per second)
     this.x += this.vx * dt;
     this.y += this.vy * dt;
   }
@@ -50,7 +50,7 @@ class Ball {
     const dot = this.vx * nx + this.vy * ny;
     this.vx = this.vx - 2 * dot * nx;
     this.vy = this.vy - 2 * dot * ny;
-    // Nudge to prevent sticking to surfaces
+    // Nudge so the ball doesn't get stuck.
     this.x += nx * POST_COLLISION_OFFSET;
     this.y += ny * POST_COLLISION_OFFSET;
   }
@@ -63,28 +63,54 @@ class Ball {
   }
 }
 
-// Generate walls evenly spaced between SMALLEST_RADIUS and LARGEST_RADIUS
-function generateCircleWalls(count: number): CircleWall[] {
+// ------------------------------
+// Wall Generation & Helpers
+// ------------------------------
+function generateCircleWalls(
+  count: number,
+  largestRadius: number,
+  smallestRadius: number
+): CircleWall[] {
   if (count <= 0) return [];
-  if (count === 1) {
-    return [{ id: 0, radius: LARGEST_RADIUS, rotation: 0, rotationSpeed: 0.005 }];
-  }
+  if (count === 1)
+    return [{ id: 0, radius: largestRadius, rotation: 0, rotationSpeed: 0.005 }];
   const walls: CircleWall[] = [];
-  const step = (LARGEST_RADIUS - SMALLEST_RADIUS) / (count - 1);
+  const step = (largestRadius - smallestRadius) / (count - 1);
   for (let i = 0; i < count; i++) {
-    const r = SMALLEST_RADIUS + step * i;
+    const r = smallestRadius + step * i;
+    // In normal mode, vary speed/direction as before.
     const speed = 0.003 + 0.002 * (i % 2 === 0 ? 1 : -1);
     walls.push({ id: i, radius: r, rotation: 0, rotationSpeed: speed });
   }
   return walls;
 }
 
-// Normalize an angle to [0, TWO_PI)
+function generateAlternateWalls(
+  count: number,
+  largestRadius: number,
+  smallestRadius: number
+): CircleWall[] {
+  // In alternate mode, all walls share the same absolute speed.
+  if (count <= 0) return [];
+  if (count === 1)
+    return [{ id: 0, radius: largestRadius, rotation: 0, rotationSpeed: 0.01, color: "white" }];
+  const walls: CircleWall[] = [];
+  const step = (largestRadius - smallestRadius) / (count - 1);
+  const speed = 0.01; // constant speed
+  for (let i = 0; i < count; i++) {
+    const r = smallestRadius + step * i;
+    // Alternate the direction and color:
+    const rotationSpeed = i % 2 === 0 ? speed : -speed;
+    const color = i % 2 === 0 ? "white" : "red";
+    walls.push({ id: i, radius: r, rotation: 0, rotationSpeed, color });
+  }
+  return walls;
+}
+
 function normalizeAngle(angle: number): number {
   return (angle % TWO_PI + TWO_PI) % TWO_PI;
 }
 
-// Check if an angle lies within the wall’s gap region.
 function isAngleInGap(angle: number, gapStart: number): boolean {
   const normAngle = normalizeAngle(angle);
   const normGapStart = normalizeAngle(gapStart);
@@ -96,7 +122,6 @@ function isAngleInGap(angle: number, gapStart: number): boolean {
   }
 }
 
-// Compute the shortest distance from a point to a line segment.
 function pointToSegmentDistance(
   px: number,
   py: number,
@@ -116,10 +141,9 @@ function pointToSegmentDistance(
   return Math.hypot(px - projX, py - projY);
 }
 
-// -------------------------------------
+// ------------------------------
 // Collision Detection Functions
-// -------------------------------------
-
+// ------------------------------
 function checkArcCollision(
   ball: Ball,
   prevX: number,
@@ -180,35 +204,62 @@ function checkRadialCap(
   return null;
 }
 
-// -------------------------------------
-// Main Component with Animation Loop
-// -------------------------------------
+// ------------------------------
+// Main Component: Responsive Canvas & Animation
+// ------------------------------
 export default function HomePage() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
 
-  // Updated gravity slider range for a visible effect.
-  const [gravity, setGravity] = useState(500); // in pixels/s²
+  // Responsive canvas: use the minimum of window dimensions but not exceed MAX_CANVAS_SIZE.
+  const [canvasSize, setCanvasSize] = useState(600);
+  useEffect(() => {
+    const updateSize = () => {
+      const size = Math.min(window.innerWidth, window.innerHeight, MAX_CANVAS_SIZE);
+      setCanvasSize(size);
+    };
+    updateSize();
+    window.addEventListener("resize", updateSize);
+    return () => window.removeEventListener("resize", updateSize);
+  }, []);
+
+  // User controls
+  const [gravity, setGravity] = useState(500); // pixels/s²
   const [ballRadius, setBallRadius] = useState(10);
   const [numWalls, setNumWalls] = useState(10);
   const [removeWallOnPass, setRemoveWallOnPass] = useState(false);
   const [fadeStrength, setFadeStrength] = useState(0.2);
+  // Mode: "normal" or "alternate"
+  const [mode, setMode] = useState<"normal" | "alternate">("normal");
+
   const [walls, setWalls] = useState<CircleWall[]>([]);
 
+  // Regenerate walls whenever numWalls, canvasSize, or mode changes.
   useEffect(() => {
-    setWalls(generateCircleWalls(numWalls));
-  }, [numWalls]);
+    const largestRadius = canvasSize / 2;
+    const smallestRadius = largestRadius * 0.23;
+    if (mode === "normal") {
+      setWalls(generateCircleWalls(numWalls, largestRadius, smallestRadius));
+    } else {
+      setWalls(generateAlternateWalls(numWalls, largestRadius, smallestRadius));
+    }
+  }, [numWalls, canvasSize, mode]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
+
+    // Set canvas dimensions.
+    canvas.width = canvasSize;
+    canvas.height = canvasSize;
     const cw = canvas.width;
     const ch = canvas.height;
     const cx = cw / 2;
     const cy = ch / 2;
+    const largestRadius = cw / 2;
 
-    // Create a ball at the center with an initial velocity.
+    // Create the ball at the center.
     const ball = new Ball(cx, cy, ballRadius, 100, -50);
     let lastTime = performance.now();
     let animationFrameId: number;
@@ -218,8 +269,7 @@ export default function HomePage() {
       const dt = (time - lastTime) / 1000;
       lastTime = time;
 
-      // Create a trailing effect.
-      if(!ctx) return;
+      // Clear with a trailing effect.
       ctx.fillStyle = `rgba(0,0,0,${fadeStrength})`;
       ctx.fillRect(0, 0, cw, ch);
 
@@ -228,12 +278,11 @@ export default function HomePage() {
         wall.rotation = normalizeAngle(wall.rotation + wall.rotationSpeed * dt * 60);
       });
 
-      // Save previous ball position.
       const prevX = ball.x;
       const prevY = ball.y;
       ball.update(dt, gravity);
 
-      // Collision detection for each wall.
+      // Check collisions and remove walls if required.
       for (let i = 0; i < localWalls.length; i++) {
         const wall = localWalls[i];
         const arcCollision = checkArcCollision(ball, prevX, prevY, cx, cy, wall);
@@ -250,24 +299,38 @@ export default function HomePage() {
           ball.reflect(capCollision1.normalX, capCollision1.normalY);
           break;
         }
-        const capCollision2 = checkRadialCap(ball, cx, cy, wall, wall.rotation + GAP_ANGLE);
+        const capCollision2 = checkRadialCap(
+          ball,
+          cx,
+          cy,
+          wall,
+          wall.rotation + GAP_ANGLE
+        );
         if (capCollision2 && capCollision2.collision) {
           ball.x = prevX;
           ball.y = prevY;
           ball.reflect(capCollision2.normalX, capCollision2.normalY);
           break;
         }
-        // Optionally remove the wall if the ball passes through its gap.
+        // Remove wall if flag is set and ball is passing through the gap.
         const ballDist = Math.hypot(ball.x - cx, ball.y - cy);
         if (
+          removeWallOnPass &&
           Math.abs(ballDist - wall.radius) < ball.radius &&
           isAngleInGap(Math.atan2(ball.y - cy, ball.x - cx), wall.rotation)
         ) {
-          if (removeWallOnPass) {
-            localWalls.splice(i, 1);
-            i--;
-          }
+          localWalls.splice(i, 1);
+          i--;
         }
+      }
+
+      // Reset ball to center if it exits the outer wall.
+      const ballDist = Math.hypot(ball.x - cx, ball.y - cy);
+      if (ballDist > largestRadius + ball.radius) {
+        ball.x = cx;
+        ball.y = cy;
+        ball.vx = 100;
+        ball.vy = -50;
       }
 
       drawWalls(ctx, cx, cy, localWalls);
@@ -276,14 +339,25 @@ export default function HomePage() {
     }
     animationFrameId = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(animationFrameId);
-  }, [gravity, ballRadius, walls, removeWallOnPass, fadeStrength]);
+  }, [gravity, ballRadius, walls, removeWallOnPass, fadeStrength, canvasSize]);
 
   return (
-    <main className="min-h-screen bg-black flex flex-col md:flex-row p-4">
+    // Add extra top padding (pt-20) so controls aren’t hidden under any fixed header.
+    <main className="min-h-screen bg-black flex flex-col md:flex-row p-4 pt-20 overflow-x-hidden">
       <div className="flex-1 flex items-center justify-center mb-4 md:mb-0">
-        <canvas ref={canvasRef} width={600} height={600} className="bg-black" />
+        <canvas ref={canvasRef} className="bg-black" />
       </div>
       <div className="w-full md:w-72 md:ml-4 text-white flex flex-col gap-4">
+        {/* Mode Toggle Button */}
+        <button
+          onClick={() =>
+            setMode((prev) => (prev === "normal" ? "alternate" : "normal"))
+          }
+          className="bg-gray-800 hover:bg-gray-700 px-4 py-2 rounded"
+        >
+          Toggle Mode (Current: {mode})
+        </button>
+        {/* Gravity Slider */}
         <div>
           <label className="block mb-1 text-sm">Gravity: {gravity.toFixed(0)}</label>
           <input
@@ -296,6 +370,7 @@ export default function HomePage() {
             className="w-full"
           />
         </div>
+        {/* Ball Radius Slider */}
         <div>
           <label className="block mb-1 text-sm">Ball Radius: {ballRadius}</label>
           <input
@@ -308,6 +383,7 @@ export default function HomePage() {
             className="w-full"
           />
         </div>
+        {/* Number of Walls Slider */}
         <div>
           <label className="block mb-1 text-sm">Number of Walls: {numWalls}</label>
           <input
@@ -320,6 +396,7 @@ export default function HomePage() {
             className="w-full"
           />
         </div>
+        {/* Remove Wall on Pass Checkbox */}
         <div className="flex items-center gap-2">
           <input
             type="checkbox"
@@ -331,8 +408,11 @@ export default function HomePage() {
             Remove Wall When Ball Passes Gap
           </label>
         </div>
+        {/* Trail Fade Slider */}
         <div>
-          <label className="block mb-1 text-sm">Trail Fade: {fadeStrength.toFixed(2)}</label>
+          <label className="block mb-1 text-sm">
+            Trail Fade: {fadeStrength.toFixed(2)}
+          </label>
           <input
             type="range"
             min="0"
@@ -349,9 +429,9 @@ export default function HomePage() {
   );
 }
 
-// -------------------------------------
+// ------------------------------
 // Drawing Helpers
-// -------------------------------------
+// ------------------------------
 function drawWalls(
   ctx: CanvasRenderingContext2D,
   cx: number,
@@ -359,10 +439,11 @@ function drawWalls(
   walls: CircleWall[]
 ) {
   ctx.save();
-  ctx.strokeStyle = "white";
-  ctx.lineWidth = 3;
-  ctx.lineCap = "round";
   walls.forEach((wall) => {
+    // Use the wall's color if provided; otherwise, default to white.
+    ctx.strokeStyle = wall.color || "white";
+    ctx.lineWidth = 3;
+    ctx.lineCap = "round";
     const startAngle = wall.rotation + GAP_ANGLE;
     const endAngle = wall.rotation + TWO_PI;
     ctx.beginPath();
