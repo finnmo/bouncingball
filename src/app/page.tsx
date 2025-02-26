@@ -3,7 +3,7 @@ import React, { useRef, useEffect, useState } from "react";
 
 const TWO_PI = Math.PI * 2;
 const GAP_ANGLE = (36 * Math.PI) / 180; // 36° gap
-const CAP_LEN = 2; // length of the radial cap line
+const CAP_LEN = 5; // length of the radial cap line
 const HALF_CAP = CAP_LEN / 2;
 const COLLISION_PAD = 2; // extra pad for early collision
 const POST_COLLISION_OFFSET = 0.5; // nudge after collision
@@ -12,7 +12,7 @@ const MIN_WALLS = 1;
 const MAX_WALLS = 20;
 const MAX_CANVAS_SIZE = 600; // maximum canvas size on desktop
 
-// Extend the wall interface to optionally include a color.
+// Extend CircleWall to optionally include a color.
 interface CircleWall {
   id: number;
   radius: number;
@@ -50,7 +50,7 @@ class Ball {
     const dot = this.vx * nx + this.vy * ny;
     this.vx = this.vx - 2 * dot * nx;
     this.vy = this.vy - 2 * dot * ny;
-    // Nudge so the ball doesn't get stuck.
+    // Nudge to prevent sticking.
     this.x += nx * POST_COLLISION_OFFSET;
     this.y += ny * POST_COLLISION_OFFSET;
   }
@@ -78,7 +78,7 @@ function generateCircleWalls(
   const step = (largestRadius - smallestRadius) / (count - 1);
   for (let i = 0; i < count; i++) {
     const r = smallestRadius + step * i;
-    // In normal mode, vary speed/direction as before.
+    // Alternate speeds/direction for visual interest.
     const speed = 0.003 + 0.002 * (i % 2 === 0 ? 1 : -1);
     walls.push({ id: i, radius: r, rotation: 0, rotationSpeed: speed });
   }
@@ -90,16 +90,17 @@ function generateAlternateWalls(
   largestRadius: number,
   smallestRadius: number
 ): CircleWall[] {
-  // In alternate mode, all walls share the same absolute speed.
   if (count <= 0) return [];
   if (count === 1)
-    return [{ id: 0, radius: largestRadius, rotation: 0, rotationSpeed: 0.01, color: "white" }];
+    return [
+      { id: 0, radius: largestRadius, rotation: 0, rotationSpeed: 0.01, color: "white" },
+    ];
   const walls: CircleWall[] = [];
   const step = (largestRadius - smallestRadius) / (count - 1);
   const speed = 0.01; // constant speed
   for (let i = 0; i < count; i++) {
     const r = smallestRadius + step * i;
-    // Alternate the direction and color:
+    // Even-indexed walls rotate one way; odd-indexed walls rotate the opposite way.
     const rotationSpeed = i % 2 === 0 ? speed : -speed;
     const color = i % 2 === 0 ? "white" : "red";
     walls.push({ id: i, radius: r, rotation: 0, rotationSpeed, color });
@@ -222,18 +223,17 @@ export default function HomePage() {
     return () => window.removeEventListener("resize", updateSize);
   }, []);
 
-  // User controls
-  const [gravity, setGravity] = useState(500); // pixels/s²
-  const [ballRadius, setBallRadius] = useState(10);
+  // User controls.
+  const [gravity, setGravity] = useState(400); // pixels/s²
+  const [ballRadius, setBallRadius] = useState(12);
   const [numWalls, setNumWalls] = useState(10);
-  const [removeWallOnPass, setRemoveWallOnPass] = useState(false);
-  const [fadeStrength, setFadeStrength] = useState(0.2);
-  // Mode: "normal" or "alternate"
+  const [removeWallOnPass, setRemoveWallOnPass] = useState(true);
+  // fadeSlider: 0 = permanent trail, 1 = no trail.
+  const [fadeStrength, setFadeStrength] = useState(0.75);
   const [mode, setMode] = useState<"normal" | "alternate">("normal");
-
   const [walls, setWalls] = useState<CircleWall[]>([]);
 
-  // Regenerate walls whenever numWalls, canvasSize, or mode changes.
+  // Regenerate walls when numWalls, canvasSize, or mode changes.
   useEffect(() => {
     const largestRadius = canvasSize / 2;
     const smallestRadius = largestRadius * 0.23;
@@ -249,7 +249,7 @@ export default function HomePage() {
     if (!canvas) return;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
-
+    
     // Set canvas dimensions.
     canvas.width = canvasSize;
     canvas.height = canvasSize;
@@ -261,19 +261,24 @@ export default function HomePage() {
 
     // Create the ball at the center.
     const ball = new Ball(cx, cy, ballRadius, 100, -50);
-    const localWalls = walls.map((w) => ({ ...w }));
-
     let lastTime = performance.now();
     let animationFrameId: number;
+    let localWalls = walls.map((w) => ({ ...w }));
+
+    // Store recent ball positions for trail.
+    const maxTrailLength = 30;
+    const ballTrail: { x: number; y: number }[] = [];
 
     function animate(time: number) {
       const dt = (time - lastTime) / 1000;
       lastTime = time;
 
-      // Clear with a trailing effect.
+      // Clear the canvas completely (no trail for circles).
       if(!ctx) return;
-      ctx.fillStyle = `rgba(0,0,0,${fadeStrength})`;
-      ctx.fillRect(0, 0, cw, ch);
+      ctx.clearRect(0, 0, cw, ch);
+
+      // Draw circles (walls) at full opacity.
+      drawWalls(ctx, cx, cy, localWalls);
 
       // Update wall rotations.
       localWalls.forEach((wall) => {
@@ -284,7 +289,13 @@ export default function HomePage() {
       const prevY = ball.y;
       ball.update(dt, gravity);
 
-      // Check collisions and remove walls if required.
+      // Append current ball position to trail.
+      ballTrail.push({ x: ball.x, y: ball.y });
+      if (ballTrail.length > maxTrailLength) {
+        ballTrail.shift();
+      }
+
+      // Check collisions and remove walls if needed.
       for (let i = 0; i < localWalls.length; i++) {
         const wall = localWalls[i];
         const arcCollision = checkArcCollision(ball, prevX, prevY, cx, cy, wall);
@@ -333,18 +344,34 @@ export default function HomePage() {
         ball.y = cy;
         ball.vx = 100;
         ball.vy = -50;
+        // Clear trail for a clean reset.
+        ballTrail.length = 0;
       }
 
-      drawWalls(ctx, cx, cy, localWalls);
+      // Draw ball trail using fadeStrength.
+      // We compute each trail point's opacity as: baseAlpha * (1 - fadeStrength) * relative age.
+      // When fadeStrength is 1, the trail is invisible; when 0, the trail is fully visible.
+      const baseAlpha = 0.5; // maximum opacity for the most recent trail point
+      for (let i = 0; i < ballTrail.length; i++) {
+        const pos = ballTrail[i];
+        const relativeAge = (i + 1) / ballTrail.length; // older points have smaller value.
+        const alpha = baseAlpha * (1 - fadeStrength) * relativeAge;
+        ctx.beginPath();
+        ctx.arc(pos.x, pos.y, ball.radius, 0, TWO_PI);
+        ctx.fillStyle = `rgba(255,165,0,${alpha.toFixed(2)})`;
+        ctx.fill();
+      }
+
+      // Draw current ball on top.
       ball.draw(ctx);
       animationFrameId = requestAnimationFrame(animate);
     }
     animationFrameId = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(animationFrameId);
-  }, [gravity, ballRadius, walls, removeWallOnPass, fadeStrength, canvasSize]);
+  }, [gravity, ballRadius, walls, removeWallOnPass, canvasSize, fadeStrength]);
 
   return (
-    // Add extra top padding (pt-20) so controls aren’t hidden under any fixed header.
+    // Extra top padding (pt-20) ensures controls are visible.
     <main className="min-h-screen bg-black flex flex-col md:flex-row p-4 pt-20 overflow-x-hidden">
       <div className="flex-1 flex items-center justify-center mb-4 md:mb-0">
         <canvas ref={canvasRef} className="bg-black" />
@@ -413,7 +440,7 @@ export default function HomePage() {
         {/* Trail Fade Slider */}
         <div>
           <label className="block mb-1 text-sm">
-            Trail Fade: {fadeStrength.toFixed(2)}
+            Trail Fade: {fadeStrength.toFixed(2)} (0 = full trail, 1 = no trail)
           </label>
           <input
             type="range"
@@ -424,7 +451,6 @@ export default function HomePage() {
             onChange={(e) => setFadeStrength(Number(e.target.value))}
             className="w-full"
           />
-          <p className="text-xs opacity-80">0 = permanent trail, 1 = no trail</p>
         </div>
       </div>
     </main>
@@ -442,7 +468,6 @@ function drawWalls(
 ) {
   ctx.save();
   walls.forEach((wall) => {
-    // Use the wall's color if provided; otherwise, default to white.
     ctx.strokeStyle = wall.color || "white";
     ctx.lineWidth = 3;
     ctx.lineCap = "round";
