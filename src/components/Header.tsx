@@ -9,7 +9,7 @@ export function Header() {
           {/* Logo */}
           <Link href="/" className="flex items-center">
             <Image
-              src="/milestones-icon.svg"
+              src="/bouncingball-icon.png"
               alt="Bouncing ball"
               width={32}
               height={32}

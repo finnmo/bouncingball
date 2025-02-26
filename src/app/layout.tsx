@@ -35,7 +35,7 @@ export default function RootLayout({
       </head>
       <body className={inter.className}>
         <DynamicComponents />
-        <div className="fixed inset-0 -z-10 bg-[url('/Clocks-Money-BG.png')] opacity-10" />
+        <div className="fixed inset-0 -z-10 opacity-10" />
         <Suspense
           fallback={
             <div className="min-h-screen bg-gray-700 flex items-center justify-center">
