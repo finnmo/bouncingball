@@ -270,6 +270,7 @@ export default function HomePage() {
       lastTime = time;
 
       // Clear with a trailing effect.
+      if(!ctx) return;
       ctx.fillStyle = `rgba(0,0,0,${fadeStrength})`;
       ctx.fillRect(0, 0, cw, ch);
 
