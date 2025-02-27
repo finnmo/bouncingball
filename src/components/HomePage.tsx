@@ -94,7 +94,7 @@ export default function HomePage() {
           const ball = spawnBalls[i];
           const prevX = ball.x;
           const prevY = ball.y;
-          ball.update(dt, gravity * 0.3);
+          ball.update(dt, gravity * 0.05);
           const currDist = Math.hypot(ball.x - cx, ball.y - cy);
           const prevDist = Math.hypot(prevX - cx, prevY - cy);
           if (
